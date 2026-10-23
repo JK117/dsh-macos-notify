@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "macOS Approval Notifications",
+    "description": "Raises a macOS system notification when DSH is waiting for your approval; clicking it reveals the owning session and the notification closes once the request is resolved."
+  }
+}
