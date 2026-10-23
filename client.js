@@ -54,6 +54,14 @@ window.__ModuleLoader__.load({
     const TITLE_LIMIT = 60;
 
     /**
+     * Demo switch: notify even while the window is focused on the asking
+     * Session. Defaults to true so the behaviour is easy to observe; set
+     * `window.__DSH_MACOS_NOTIFY_ALWAYS__ = false` (or flip this fallback) to
+     * restore the quiet rule: only background windows or other Sessions.
+     */
+    const ALWAYS_NOTIFY = globalThis.__DSH_MACOS_NOTIFY_ALWAYS__ !== false;
+
+    /**
      * Collapse whitespace and cap a piece of copy at a character budget.
      *
      * @param {unknown} text - candidate copy, possibly not a string.
@@ -141,6 +149,7 @@ window.__ModuleLoader__.load({
        * @returns {boolean} true when a notification adds information.
        */
       function shouldNotify(sessionId) {
+        if (ALWAYS_NOTIFY) return true;
         try {
           const visible = document.visibilityState === 'visible' && document.hasFocus();
           if (!visible) return true;
