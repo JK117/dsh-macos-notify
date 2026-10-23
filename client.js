@@ -54,12 +54,12 @@ window.__ModuleLoader__.load({
     const TITLE_LIMIT = 60;
 
     /**
-     * Demo switch: notify even while the window is focused on the asking
-     * Session. Defaults to true so the behaviour is easy to observe; set
-     * `window.__DSH_MACOS_NOTIFY_ALWAYS__ = false` (or flip this fallback) to
-     * restore the quiet rule: only background windows or other Sessions.
+     * Debug switch: when `window.__DSH_MACOS_NOTIFY_ALWAYS__ === true` before
+     * the bundle materializes, every pending approval notifies even while the
+     * window is focused on the asking Session. Off by default; the console
+     * escape hatch is for observing or diagnosing delivery.
      */
-    const ALWAYS_NOTIFY = globalThis.__DSH_MACOS_NOTIFY_ALWAYS__ !== false;
+    const ALWAYS_NOTIFY = globalThis.__DSH_MACOS_NOTIFY_ALWAYS__ === true;
 
     /**
      * Collapse whitespace and cap a piece of copy at a character budget.
