@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "macOS Response Notifications",
-    "description": "Raises a macOS system notification when DSH is waiting for you — approval, question, or plan review; clicking it reveals the owning session and the notification closes once the request is resolved."
+    "title": "macOS Session Notifications",
+    "description": "Raises a macOS system notification when DSH is waiting for you — approval, question, or plan review — and when a Session finishes a turn; clicking it reveals the owning Session, and the notification retires once the request is resolved or the Session runs again."
   }
 }

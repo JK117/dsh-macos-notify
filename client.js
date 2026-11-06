@@ -10,20 +10,26 @@
  * notification, so it appears in Notification Center as "DeepSeek Harness"
  * instead of a helper process.
  *
+ * It also watches each Session's `running` fact for a `true → false` edge: a
+ * turn that ends with no blocking interaction is a finished task, and a
+ * notification for it is what tells a background user that the agent is done.
+ *
  * Design notes:
- * - Nothing here touches the interaction waterfalls. Pending interactions are
- *   discovered from `ctx.uiSession.sessionStatus`, the same publication the
- *   panels themselves consume, so this plugin can never consume or reorder a
- *   decision.
- * - Notifications follow `pendingInteraction.kind`: `approval` (permission),
- *   `question` (ask_user_question), `plan-review` (a question batch whose
- *   intent marks it as a plan decision), and a generic fallback for any future
- *   domain that registers one.
+ * - Nothing here touches the interaction waterfalls. Pending interactions and
+ *   running state are discovered from `ctx.uiSession.sessionStatus`, the same
+ *   publication the panels themselves consume, so this plugin can never
+ *   consume or reorder a decision.
+ * - Interaction notifications follow `pendingInteraction.kind`: `approval`
+ *   (permission), `question` (ask_user_question), `plan-review` (a question
+ *   batch whose intent marks it as a plan decision), and a generic fallback
+ *   for any future domain that registers one.
  * - A notification is raised only when looking at the conversation would not
- *   already reveal the request: window in the background, or the pending
- *   Session differs from the main view.
+ *   already reveal the event: window in the background, or the Session differs
+ *   from the main view.
  * - Clicking reveals the owning Session (and, for questions, the answerable
- *   panel); resolving the request in any way closes its notification.
+ *   panel); resolving the request in any way closes its notification. A
+ *   finished-turn notification retires when the Session starts running again,
+ *   when it is clicked, or when the plugin unloads.
  */
 window.__ModuleLoader__.load({
   id: 'dsh-macos-notify',
@@ -41,12 +47,14 @@ window.__ModuleLoader__.load({
       titleQuestion: 'DSH 等待你的回答',
       titlePlanReview: 'DSH 等待你审批计划',
       titleGeneric: 'DSH 等待你的响应',
+      titleComplete: 'DSH 会话已完成',
       bodyApproval: '{tool} 请求越权执行',
       bodyApprovalWithReason: '{tool}：{reason}',
       bodyQuestion: '{question}',
       bodyQuestionBatch: '{question}（共 {count} 个问题）',
       bodyPlanReview: '计划：{title}',
       bodyGeneric: '有操作需要你处理',
+      bodyComplete: '本轮已结束，点击查看结果',
       session: '会话：{title}',
       unknownTool: '有工具',
       unknownQuestion: 'DSH 有一个问题要问你',
@@ -58,12 +66,14 @@ window.__ModuleLoader__.load({
       titleQuestion: 'DSH needs your answer',
       titlePlanReview: 'DSH needs your plan review',
       titleGeneric: 'DSH needs your response',
+      titleComplete: 'DSH session finished',
       bodyApproval: '{tool} requests privileged execution',
       bodyApprovalWithReason: '{tool}: {reason}',
       bodyQuestion: '{question}',
       bodyQuestionBatch: '{question} ({count} questions)',
       bodyPlanReview: 'Plan: {title}',
       bodyGeneric: 'Something is waiting for you',
+      bodyComplete: 'This turn has ended — click to see the result',
       session: 'Session: {title}',
       unknownTool: 'A tool',
       unknownQuestion: 'DSH has a question for you',
@@ -138,6 +148,10 @@ window.__ModuleLoader__.load({
       let openSession;
       /** Notification handles by pending interaction key. */
       const live = new Map();
+      /** Notification handles by Session id for finished turns. */
+      const finished = new Map();
+      /** Last observed `running` fact per Session, for finish detection. */
+      const running = new Map();
 
       ctx.inject(['uiWorkspace'], (scope) => {
         openSession = (sessionId) => scope.uiWorkspace.openSession(sessionId);
@@ -169,6 +183,29 @@ window.__ModuleLoader__.load({
         } catch (_error) {
           return '';
         }
+      }
+
+      /** Whether the catalog marks this Session as a subagent run. */
+      function isSubagent(sessionId) {
+        try {
+          return ctx.sessions.list.getSnapshot()?.byId?.[sessionId]?.origin === 'subagent';
+        } catch (_error) {
+          return false;
+        }
+      }
+
+      /**
+       * Whether a projection entry is an actual blocking request, as opposed to
+       * a settled read-only review card or an already-answered approval.
+       *
+       * @param {object|undefined|null} pending - projected pending interaction.
+       * @returns {boolean} true when the request still needs the user.
+       */
+      function blocksUser(pending) {
+        if (pending === undefined || pending === null) return false;
+        if (pending.review !== undefined) return false;
+        if (pending.answerable === false) return false;
+        return true;
       }
 
       /** The request's question batch, normalized to an array. */
@@ -250,15 +287,8 @@ window.__ModuleLoader__.load({
         }
       }
 
-      /**
-       * Bring the application forward, reveal the asking Session, and reopen
-       * the answerable question panel when the interaction is a question the
-       * user may have dismissed.
-       *
-       * @param {string} sessionId - Session owning the request.
-       * @param {object} pending - the pending interaction that was notified.
-       */
-      function reveal(sessionId, pending) {
+      /** Bring the application forward and reveal one Session. */
+      function focusSession(sessionId) {
         try {
           window.focus();
         } catch (_error) {
@@ -271,6 +301,18 @@ window.__ModuleLoader__.load({
             /* a removed or still-loading Session must not break the click */
           }
         }
+      }
+
+      /**
+       * Bring the application forward, reveal the asking Session, and reopen
+       * the answerable question panel when the interaction is a question the
+       * user may have dismissed.
+       *
+       * @param {string} sessionId - Session owning the request.
+       * @param {object} pending - the pending interaction that was notified.
+       */
+      function reveal(sessionId, pending) {
+        focusSession(sessionId);
         if (pending.kind !== 'question' && pending.kind !== 'plan-review') return;
         if (typeof pending.callId !== 'string') return;
         let panels;
@@ -329,7 +371,77 @@ window.__ModuleLoader__.load({
         }
       }
 
-      /** Reconcile the live notifications with the pending-interaction snapshot. */
+      /**
+       * Raise a notification for a Session whose turn just finished.
+       *
+       * @param {string} sessionId - Session that went idle.
+       */
+      function showFinished(sessionId) {
+        if (typeof Notifier !== 'function') return;
+        if (Notifier.permission !== 'granted') return;
+        // A subagent finishing is bookkeeping; the Session that asked for it is
+        // still running and will notify when its own turn ends.
+        if (isSubagent(sessionId)) return;
+        if (!shouldNotify(sessionId)) return;
+
+        const lines = [t('bodyComplete')];
+        const session = sessionTitle(sessionId);
+        if (session !== '') lines.push(t('session', { title: session }));
+
+        dismissFinished(sessionId);
+        let notification;
+        try {
+          notification = new Notifier(shorten(t('titleComplete'), TITLE_LIMIT), {
+            body: lines.join('\n'),
+            tag: `dsh-macos-notify:session-complete:${sessionId}`,
+          });
+        } catch (_error) {
+          return;
+        }
+        notification.onclick = () => {
+          focusSession(sessionId);
+          if (finished.get(sessionId) === notification) finished.delete(sessionId);
+          try {
+            notification.close();
+          } catch (_error) {
+            /* already dismissed by the system */
+          }
+        };
+        finished.set(sessionId, notification);
+      }
+
+      /** Close the finished-turn notification of one Session, if any. */
+      function dismissFinished(sessionId) {
+        const notification = finished.get(sessionId);
+        if (notification === undefined) return;
+        finished.delete(sessionId);
+        try {
+          notification.close();
+        } catch (_error) {
+          /* already dismissed by the system */
+        }
+      }
+
+      /**
+       * Track one Session's `running` edge. A `true → false` edge with no
+       * blocking interaction is a finished turn: notify once. Starting a new
+       * turn retires the previous finished-turn notification.
+       *
+       * @param {string} sessionId - Session whose status was observed.
+       * @param {object} value - projected status for that Session.
+       */
+      function trackRunning(sessionId, value) {
+        const wasRunning = running.get(sessionId) === true;
+        const isRunning = value?.running === true;
+        running.set(sessionId, isRunning);
+        if (value?.running === false) {
+          if (wasRunning && !blocksUser(value.pendingInteraction)) showFinished(sessionId);
+          return;
+        }
+        if (isRunning) dismissFinished(sessionId);
+      }
+
+      /** Reconcile notifications with the pending-interaction and running snapshot. */
       function reconcile() {
         if (status === undefined) return;
         let snapshot;
@@ -341,12 +453,10 @@ window.__ModuleLoader__.load({
 
         const pendingKeys = new Set();
         for (const [sessionId, value] of snapshot) {
+          trackRunning(sessionId, value);
+
           const pending = value?.pendingInteraction;
-          if (pending === undefined || pending === null) continue;
-          // A read-only card replays answers for a call that already settled.
-          if (pending.review !== undefined) continue;
-          // Approvals publish `answerable`; a settled one is on its way out.
-          if (pending.answerable === false) continue;
+          if (!blocksUser(pending)) continue;
           const key = pending.key;
           if (typeof key !== 'string') continue;
           pendingKeys.add(key);
@@ -354,6 +464,12 @@ window.__ModuleLoader__.load({
         }
         for (const key of [...live.keys()]) {
           if (!pendingKeys.has(key)) dismiss(key);
+        }
+        // A Session that left the projection cannot own a live fact any more.
+        for (const sessionId of [...running.keys()]) {
+          if (snapshot.has(sessionId)) continue;
+          running.delete(sessionId);
+          dismissFinished(sessionId);
         }
       }
 
@@ -363,8 +479,10 @@ window.__ModuleLoader__.load({
         return () => {
           stop();
           for (const key of [...live.keys()]) dismiss(key);
+          for (const sessionId of [...finished.keys()]) dismissFinished(sessionId);
+          running.clear();
         };
-      }, 'dsh-macos-notify: pending interactions');
+      }, 'dsh-macos-notify: session events');
     }
 
     exports.apply = apply;

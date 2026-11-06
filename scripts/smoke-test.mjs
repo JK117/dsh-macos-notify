@@ -58,6 +58,7 @@ function makeHarness({ always }) {
     visibility: 'visible',
     currentSession: undefined,
     titles: {},
+    origins: {},
     opened: [],
     focusCalls: 0,
     panels: [],
@@ -151,7 +152,10 @@ function makeHarness({ always }) {
       list: {
         getSnapshot: () => ({
           byId: Object.fromEntries(
-            Object.entries(state.titles).map(([id, title]) => [id, { title }]),
+            Object.entries(state.titles).map(([id, title]) => [
+              id,
+              { title, origin: state.origins[id] },
+            ]),
           ),
         }),
       },
@@ -396,3 +400,142 @@ function planReview(key, sessionId, title) {
 }
 
 console.log('dsh-macos-notify smoke test: ok');
+
+// --- Session completion: a finished turn notifies, quietly ---------------
+{
+  const h = makeHarness({ always: false });
+  const { FakeNotification, state, effects } = h;
+
+  state.currentSession = 's1';
+  state.titles = { s1: '重构侧边栏', s2: '检查依赖' };
+  state.focused = true;
+
+  // 1. An idle Session at startup is a baseline, not a completion.
+  state.pending = new Map([['s2', { running: false }]]);
+  h.emit();
+  assert.equal(FakeNotification.instances.length, 0, 'an idle baseline must not notify');
+
+  // 2. Starting a turn is not a completion.
+  state.pending = new Map([['s2', { running: true }]]);
+  h.emit();
+  assert.equal(FakeNotification.instances.length, 0, 'a running turn must not notify');
+
+  // 3. A background Session finishing notifies once, with its name and tag.
+  state.pending = new Map([['s2', { running: false }]]);
+  h.emit();
+  assert.equal(FakeNotification.instances.length, 1, 'a finished background turn must notify');
+  const first = FakeNotification.instances[0];
+  assert.equal(first.title, 'DSH 会话已完成');
+  assert.match(first.body, /本轮已结束，点击查看结果/);
+  assert.match(first.body, /会话：检查依赖/);
+  assert.equal(first.tag, 'dsh-macos-notify:session-complete:s2');
+  h.emit();
+  assert.equal(FakeNotification.instances.length, 1, 'one finish must notify only once');
+
+  // 4. Clicking reveals the finished Session, focuses, and closes.
+  first.click();
+  assert.equal(state.focusCalls, 1, 'click must request window focus');
+  assert.deepEqual(state.opened, ['s2'], 'click must reveal the finished Session');
+  assert.equal(first.closed, true, 'click must retire the finished notification');
+
+  // 5. A new turn retires the previous finished notification.
+  state.pending = new Map([['s2', { running: true }]]);
+  h.emit();
+  state.pending = new Map([['s2', { running: false }]]);
+  h.emit();
+  assert.equal(FakeNotification.instances.length, 2, 'a second turn finish notifies again');
+  const second = FakeNotification.instances[1];
+  state.pending = new Map([['s2', { running: true }]]);
+  h.emit();
+  assert.equal(second.closed, true, 'starting a new turn must retire the finished notification');
+
+  // 6. A focused current Session needs no completion notification.
+  state.pending = new Map([['s1', { running: true }]]);
+  h.emit();
+  state.pending = new Map([['s1', { running: false }]]);
+  h.emit();
+  assert.equal(FakeNotification.instances.length, 2, 'focused current Session must stay quiet');
+
+  // 7. A background window does need one, even for the current Session.
+  state.focused = false;
+  state.pending = new Map([['s1', { running: true }]]);
+  h.emit();
+  state.pending = new Map([['s1', { running: false }]]);
+  h.emit();
+  assert.equal(FakeNotification.instances.length, 3, 'background window must notify completion');
+  assert.match(FakeNotification.instances[2].body, /会话：重构侧边栏/);
+  state.focused = true;
+
+  // 8. A blocking interaction at the stop owns the reminder; no duplicate.
+  state.pending = new Map([['s2', { running: true }]]);
+  h.emit();
+  const paused = planReview('question:s2:call-9', 's2', '先审批再实施');
+  state.pending = new Map([['s2', {
+    running: false,
+    pendingInteraction: paused.pendingInteraction,
+  }]]);
+  h.emit();
+  assert.equal(FakeNotification.instances.length, 4, 'a pause for an interaction must not notify completion');
+  assert.equal(FakeNotification.instances[3].title, 'DSH 等待你审批计划');
+
+  // 9. Subagent completions are bookkeeping, not a user-facing finish.
+  state.origins = { s2: 'subagent' };
+  state.pending = new Map([['s2', { running: true }]]);
+  h.emit();
+  state.pending = new Map([['s2', { running: false }]]);
+  h.emit();
+  assert.equal(FakeNotification.instances.length, 4, 'subagent completions must stay silent');
+  state.origins = {};
+
+  // 10. Disposal closes every finished notification.
+  state.pending = new Map([['s2', { running: true }]]);
+  h.emit();
+  state.pending = new Map([['s2', { running: false }]]);
+  h.emit();
+  assert.equal(FakeNotification.instances.length, 5);
+  const last = FakeNotification.instances[4];
+  assert.equal(last.closed, false);
+  const dispose = effects.at(-1);
+  assert.equal(typeof dispose, 'function');
+  dispose();
+  assert.equal(last.closed, true, 'disposal must close live finished notifications');
+  assert.equal(h.listeners.size, 0, 'disposal must unsubscribe');
+}
+
+// --- Session completion: permission denied and always mode ---------------
+{
+  const h = makeHarness({ always: false });
+  const { FakeNotification, state } = h;
+
+  state.currentSession = 's1';
+  state.titles = { s1: '重构侧边栏' };
+  state.focused = false;
+  FakeNotification.permission = 'denied';
+  state.pending = new Map([['s1', { running: true }]]);
+  h.emit();
+  state.pending = new Map([['s1', { running: false }]]);
+  h.emit();
+  assert.equal(FakeNotification.instances.length, 0, 'denied permission must silence completion');
+
+  FakeNotification.permission = 'granted';
+  state.pending = new Map([['s1', { running: true }]]);
+  h.emit();
+  state.pending = new Map([['s1', { running: false }]]);
+  h.emit();
+  assert.equal(FakeNotification.instances.length, 1, 'granted permission must allow completion');
+}
+
+{
+  const h = makeHarness({ always: true });
+  const { FakeNotification, state } = h;
+
+  state.currentSession = 's1';
+  state.titles = { s1: '重构侧边栏' };
+  state.focused = true;
+  state.pending = new Map([['s1', { running: true }]]);
+  h.emit();
+  state.pending = new Map([['s1', { running: false }]]);
+  h.emit();
+  assert.equal(FakeNotification.instances.length, 1, 'always mode must notify a focused completion');
+  assert.equal(FakeNotification.instances[0].title, 'DSH 会话已完成');
+}
