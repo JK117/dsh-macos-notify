@@ -1,22 +1,29 @@
 /**
  * dsh-macos-notify — Client half.
  *
- * DSH shows a blocking permission request as a panel inside the conversation.
- * When the window is in the background (or the request belongs to another
- * Session), that panel is invisible until you come back. This module mirrors
- * every pending approval into a macOS notification through the renderer's Web
- * Notification API: the desktop shell owns the notification, so it appears in
- * Notification Center as "DeepSeek Harness" instead of a helper process.
+ * DSH shows every interaction that blocks the agent — a permission request, an
+ * `ask_user_question` batch, or a plan submitted for review — as a panel inside
+ * the conversation. When the window is in the background (or the request
+ * belongs to another Session), that panel is invisible until you come back.
+ * This module mirrors every pending interaction into a macOS notification
+ * through the renderer's Web Notification API: the desktop shell owns the
+ * notification, so it appears in Notification Center as "DeepSeek Harness"
+ * instead of a helper process.
  *
  * Design notes:
- * - Nothing here touches the approval waterfall. Approvals are discovered from
- *   `ctx.uiSession.sessionStatus`, the same publication the approval panel
- *   consumes, so this plugin can never consume or reorder a decision.
+ * - Nothing here touches the interaction waterfalls. Pending interactions are
+ *   discovered from `ctx.uiSession.sessionStatus`, the same publication the
+ *   panels themselves consume, so this plugin can never consume or reorder a
+ *   decision.
+ * - Notifications follow `pendingInteraction.kind`: `approval` (permission),
+ *   `question` (ask_user_question), `plan-review` (a question batch whose
+ *   intent marks it as a plan decision), and a generic fallback for any future
+ *   domain that registers one.
  * - A notification is raised only when looking at the conversation would not
  *   already reveal the request: window in the background, or the pending
  *   Session differs from the main view.
- * - Clicking reveals the owning Session; resolving the request in any way
- *   closes its notification.
+ * - Clicking reveals the owning Session (and, for questions, the answerable
+ *   panel); resolving the request in any way closes its notification.
  */
 window.__ModuleLoader__.load({
   id: 'dsh-macos-notify',
@@ -30,20 +37,36 @@ window.__ModuleLoader__.load({
 
     /** Simplified Chinese dictionary (the key-set source of truth). */
     const zh = {
-      title: 'DSH 等待你的授权',
-      body: '{tool} 请求越权执行',
-      bodyWithReason: '{tool}：{reason}',
+      titleApproval: 'DSH 等待你的授权',
+      titleQuestion: 'DSH 等待你的回答',
+      titlePlanReview: 'DSH 等待你审批计划',
+      titleGeneric: 'DSH 等待你的响应',
+      bodyApproval: '{tool} 请求越权执行',
+      bodyApprovalWithReason: '{tool}：{reason}',
+      bodyQuestion: '{question}',
+      bodyQuestionBatch: '{question}（共 {count} 个问题）',
+      bodyPlanReview: '计划：{title}',
+      bodyGeneric: '有操作需要你处理',
       session: '会话：{title}',
       unknownTool: '有工具',
+      unknownQuestion: 'DSH 有一个问题要问你',
     };
 
     /** English dictionary, checked complete against the zh key set. */
     const en = {
-      title: 'DSH needs your approval',
-      body: '{tool} requests privileged execution',
-      bodyWithReason: '{tool}: {reason}',
+      titleApproval: 'DSH needs your approval',
+      titleQuestion: 'DSH needs your answer',
+      titlePlanReview: 'DSH needs your plan review',
+      titleGeneric: 'DSH needs your response',
+      bodyApproval: '{tool} requests privileged execution',
+      bodyApprovalWithReason: '{tool}: {reason}',
+      bodyQuestion: '{question}',
+      bodyQuestionBatch: '{question} ({count} questions)',
+      bodyPlanReview: 'Plan: {title}',
+      bodyGeneric: 'Something is waiting for you',
       session: 'Session: {title}',
       unknownTool: 'A tool',
+      unknownQuestion: 'DSH has a question for you',
     };
 
     /** Services this plugin cannot work without. */
@@ -55,8 +78,8 @@ window.__ModuleLoader__.load({
 
     /**
      * Debug switch: when `window.__DSH_MACOS_NOTIFY_ALWAYS__ === true` before
-     * the bundle materializes, every pending approval notifies even while the
-     * window is focused on the asking Session. Off by default; the console
+     * the bundle materializes, every pending interaction notifies even while
+     * the window is focused on the asking Session. Off by default; the console
      * escape hatch is for observing or diagnosing delivery.
      */
     const ALWAYS_NOTIFY = globalThis.__DSH_MACOS_NOTIFY_ALWAYS__ === true;
@@ -76,7 +99,30 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Mirror pending approvals into system notifications.
+     * Name a plan from its markdown: the first heading, else the first real
+     * line. Used so a plan-review notification says what is being reviewed
+     * instead of only that a decision is waiting.
+     *
+     * @param {unknown} detail - plan markdown carried as the question detail.
+     * @returns {string} the plan's name, empty when the markdown carries none.
+     */
+    function planName(detail) {
+      if (typeof detail !== 'string') return '';
+      const lines = detail.split('\n');
+      for (const line of lines) {
+        const heading = /^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/.exec(line);
+        if (heading !== null) return shorten(heading[1].replace(/[*_`]/g, ''), TITLE_LIMIT);
+      }
+      for (const line of lines) {
+        const text = line.trim();
+        if (text === '' || /^[-*_]{3,}$/.test(text) || text.startsWith('```')) continue;
+        return shorten(text.replace(/^[>\-*+\d.\s]+/, '').replace(/[*_`]/g, ''), TITLE_LIMIT);
+      }
+      return '';
+    }
+
+    /**
+     * Mirror pending interactions into system notifications.
      *
      * @param {object} ctx - the Client root context.
      */
@@ -125,8 +171,21 @@ window.__ModuleLoader__.load({
         }
       }
 
+      /** The request's question batch, normalized to an array. */
+      function questionsOf(pending) {
+        return Array.isArray(pending.questions) ? pending.questions : [];
+      }
+
+      /** The notification title, by interaction kind. */
+      function titleFor(pending) {
+        if (pending.kind === 'approval') return t('titleApproval');
+        if (pending.kind === 'plan-review') return t('titlePlanReview');
+        if (pending.kind === 'question') return t('titleQuestion');
+        return t('titleGeneric');
+      }
+
       /** The request's headline: localized escalation copy plus the asker. */
-      function requestText(pending) {
+      function approvalText(pending) {
         const tool = pending.toolName ? pending.toolName : t('unknownTool');
         let reason;
         try {
@@ -137,9 +196,41 @@ window.__ModuleLoader__.load({
           reason = pending.reason;
         }
         if (typeof reason === 'string' && reason.trim() !== '') {
-          return shorten(t('bodyWithReason', { tool, reason }), BODY_LIMIT);
+          return t('bodyApprovalWithReason', { tool, reason });
         }
-        return shorten(t('body', { tool }), BODY_LIMIT);
+        return t('bodyApproval', { tool });
+      }
+
+      /** The request's headline for a question batch or a plan review. */
+      function questionText(pending) {
+        const questions = questionsOf(pending);
+        const first = questions[0];
+        if (first === undefined || first === null) return t('unknownQuestion');
+
+        if (pending.kind === 'plan-review') {
+          const plan = planName(first.detail);
+          if (plan !== '') return t('bodyPlanReview', { title: plan });
+          return typeof first.question === 'string' && first.question.trim() !== ''
+            ? first.question
+            : t('unknownQuestion');
+        }
+
+        const line = typeof first.question === 'string' && first.question.trim() !== ''
+          ? first.question
+          : t('unknownQuestion');
+        if (questions.length > 1) {
+          return t('bodyQuestionBatch', { question: line, count: questions.length });
+        }
+        return t('bodyQuestion', { question: line });
+      }
+
+      /** The notification body: what is being asked, in one short line. */
+      function requestText(pending) {
+        let text;
+        if (pending.kind === 'approval') text = approvalText(pending);
+        else if (pending.kind === 'question' || pending.kind === 'plan-review') text = questionText(pending);
+        else text = t('bodyGeneric');
+        return shorten(text, BODY_LIMIT);
       }
 
       /**
@@ -159,8 +250,15 @@ window.__ModuleLoader__.load({
         }
       }
 
-      /** Bring the application forward and reveal the asking Session. */
-      function reveal(sessionId) {
+      /**
+       * Bring the application forward, reveal the asking Session, and reopen
+       * the answerable question panel when the interaction is a question the
+       * user may have dismissed.
+       *
+       * @param {string} sessionId - Session owning the request.
+       * @param {object} pending - the pending interaction that was notified.
+       */
+      function reveal(sessionId, pending) {
         try {
           window.focus();
         } catch (_error) {
@@ -173,9 +271,23 @@ window.__ModuleLoader__.load({
             /* a removed or still-loading Session must not break the click */
           }
         }
+        if (pending.kind !== 'question' && pending.kind !== 'plan-review') return;
+        if (typeof pending.callId !== 'string') return;
+        let panels;
+        try {
+          panels = typeof ctx.get === 'function' ? ctx.get('userQuestionPanels') : undefined;
+        } catch (_error) {
+          panels = undefined;
+        }
+        if (panels === undefined || panels === null) return;
+        try {
+          panels.reveal(sessionId, pending.callId);
+        } catch (_error) {
+          /* a question UI outside this client keeps the transcript instead */
+        }
       }
 
-      /** Raise one notification for a newly observed pending approval. */
+      /** Raise one notification for a newly observed pending interaction. */
       function show(sessionId, pending) {
         if (typeof Notifier !== 'function') return;
         if (Notifier.permission !== 'granted') return;
@@ -187,7 +299,7 @@ window.__ModuleLoader__.load({
 
         let notification;
         try {
-          notification = new Notifier(t('title'), {
+          notification = new Notifier(shorten(titleFor(pending), TITLE_LIMIT), {
             body: lines.join('\n'),
             tag: `dsh-macos-notify:${sessionId}:${pending.key}`,
           });
@@ -195,14 +307,14 @@ window.__ModuleLoader__.load({
           return;
         }
         notification.onclick = () => {
-          reveal(sessionId);
+          reveal(sessionId, pending);
           try {
             notification.close();
           } catch (_error) {
             /* already dismissed by the system */
           }
         };
-        live.set(pending.key, { sessionId, notification });
+        live.set(pending.key, { sessionId, pending, notification });
       }
 
       /** Close and forget one notification. */
@@ -231,7 +343,9 @@ window.__ModuleLoader__.load({
         for (const [sessionId, value] of snapshot) {
           const pending = value?.pendingInteraction;
           if (pending === undefined || pending === null) continue;
-          if (pending.kind !== 'approval') continue;
+          // A read-only card replays answers for a call that already settled.
+          if (pending.review !== undefined) continue;
+          // Approvals publish `answerable`; a settled one is on its way out.
           if (pending.answerable === false) continue;
           const key = pending.key;
           if (typeof key !== 'string') continue;
@@ -250,7 +364,7 @@ window.__ModuleLoader__.load({
           stop();
           for (const key of [...live.keys()]) dismiss(key);
         };
-      }, 'dsh-macos-notify: approvals');
+      }, 'dsh-macos-notify: pending interactions');
     }
 
     exports.apply = apply;

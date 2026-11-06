@@ -6,7 +6,8 @@
  * one sandbox with the quiet rule (`__DSH_MACOS_NOTIFY_ALWAYS__ = false`) and
  * one with the always-notify demo switch. It checks the decisions the plugin
  * makes: when to notify, what it says, what clicking does, and how
- * notifications retire.
+ * notifications retire — for approvals, questions, plan reviews, and unknown
+ * pending-interaction domains.
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -59,6 +60,7 @@ function makeHarness({ always }) {
     titles: {},
     opened: [],
     focusCalls: 0,
+    panels: [],
     pending: new Map(),
   };
 
@@ -109,6 +111,15 @@ function makeHarness({ always }) {
         },
       });
     },
+    get(name) {
+      if (name !== 'userQuestionPanels') return undefined;
+      return {
+        reveal(sessionId, callId) {
+          state.panels.push([sessionId, callId]);
+          return true;
+        },
+      };
+    },
     locale: {
       register(namespace, dictionaries) {
         assert.equal(namespace, 'dsh-macos-notify');
@@ -153,6 +164,9 @@ function makeHarness({ always }) {
   moduleExports.apply(ctx);
   assert.equal(listeners.size, 1);
 
+  // Both dictionaries must stay key-aligned; the renderer picks one at runtime.
+  assert.deepEqual(Object.keys(registered.en).sort(), Object.keys(registered.zh).sort());
+
   const emit = () => {
     for (const listener of [...listeners]) listener();
   };
@@ -169,6 +183,39 @@ function approval(key, toolName, reason) {
       toolName,
       reason,
       answerable: true,
+    },
+  };
+}
+
+/** Build one pending `ask_user_question` entry. */
+function question(key, sessionId, prompts, extra = {}) {
+  return {
+    pendingInteraction: {
+      kind: 'question',
+      key,
+      sessionId,
+      callId: key.slice(key.lastIndexOf(':') + 1),
+      questions: prompts.map((prompt, index) => ({ id: `q${index + 1}`, question: prompt })),
+      ...extra,
+    },
+  };
+}
+
+/** Build one pending plan-review entry (an `ask_user_question` with plan intent). */
+function planReview(key, sessionId, title) {
+  return {
+    pendingInteraction: {
+      kind: 'plan-review',
+      key,
+      sessionId,
+      callId: key.slice(key.lastIndexOf(':') + 1),
+      questions: [{
+        id: 'q1',
+        question: 'Approve this plan?',
+        detail: `# ${title}\n\n## Goal\n\nShip the change.`,
+        intent: { kind: 'plan-review', approve: '开始实施' },
+        options: [{ label: '开始实施' }, { label: '先不实施' }],
+      }],
     },
   };
 }
@@ -244,7 +291,89 @@ function approval(key, toolName, reason) {
   assert.equal(open.closed, true, 'disposal must close live notifications');
 }
 
-// --- Demo switch: every pending approval notifies --------------------------
+// --- Questions, plan reviews, and unknown domains -------------------------
+{
+  const h = makeHarness({ always: false });
+  const { FakeNotification, state } = h;
+
+  state.currentSession = 's1';
+  state.titles = { s1: '重构侧边栏', s2: '检查依赖' };
+  state.focused = true;
+
+  // 1. A background question notifies with its prompt and a question title.
+  state.pending = new Map([
+    ['s2', question('question:s2:call-1', 's2', ['要保留旧的导出函数吗？'])],
+  ]);
+  h.emit();
+  assert.equal(FakeNotification.instances.length, 1, 'background question must notify');
+  const asked = FakeNotification.instances[0];
+  assert.equal(asked.title, 'DSH 等待你的回答');
+  assert.match(asked.body, /要保留旧的导出函数吗？/);
+  assert.match(asked.body, /会话：检查依赖/);
+  assert.equal(asked.tag, 'dsh-macos-notify:s2:question:s2:call-1');
+
+  // 2. Clicking a question reveals the panel as well as the Session.
+  asked.click();
+  assert.deepEqual(state.panels, [['s2', 'call-1']], 'click must reopen the question panel');
+  assert.deepEqual(state.opened, ['s2'], 'click must reveal the owning Session');
+
+  // 3. A multi-question batch says how many answers are wanted.
+  state.pending = new Map([
+    ['s2', question('question:s2:call-2', 's2', ['先改文案还是先改逻辑？', '需要补测试吗？'])],
+  ]);
+  h.emit();
+  assert.equal(FakeNotification.instances.length, 2);
+  const batch = FakeNotification.instances[1];
+  assert.match(batch.body, /先改文案还是先改逻辑？/);
+  assert.match(batch.body, /共 2 个问题/);
+
+  // 4. A plan review names the plan from its markdown heading.
+  state.pending = new Map([
+    ['s2', planReview('question:s2:call-3', 's2', '扩展通知覆盖全部待处理交互')],
+  ]);
+  h.emit();
+  assert.equal(FakeNotification.instances.length, 3);
+  const review = FakeNotification.instances[2];
+  assert.equal(review.title, 'DSH 等待你审批计划');
+  assert.match(review.body, /计划：扩展通知覆盖全部待处理交互/);
+  assert.equal(review.tag, 'dsh-macos-notify:s2:question:s2:call-3');
+
+  // 5. A read-only review card replays settled answers and must stay silent.
+  state.pending = new Map([
+    ['s2', {
+      pendingInteraction: {
+        kind: 'question',
+        key: 'question:s2:call-4',
+        sessionId: 's2',
+        callId: 'call-4',
+        questions: [{ id: 'q1', question: '已经回答过的问题' }],
+        review: { answers: [] },
+      },
+    }],
+  ]);
+  h.emit();
+  assert.equal(FakeNotification.instances.length, 3, 'review cards must not notify');
+
+  // 6. An unknown future domain still notifies, with generic copy.
+  state.pending = new Map([
+    ['s2', {
+      pendingInteraction: { kind: 'elicitation', key: 'elicitation:1', sessionId: 's2' },
+    }],
+  ]);
+  h.emit();
+  assert.equal(FakeNotification.instances.length, 4, 'unknown domains must still notify');
+  assert.equal(FakeNotification.instances[3].title, 'DSH 等待你的响应');
+  assert.match(FakeNotification.instances[3].body, /有操作需要你处理/);
+
+  // 7. Answering the batch retires every notification that belonged to it.
+  state.pending = new Map();
+  h.emit();
+  for (const notification of FakeNotification.instances) {
+    assert.equal(notification.closed, true, 'resolved interactions must close their notifications');
+  }
+}
+
+// --- Demo switch: every pending interaction notifies ----------------------
 {
   const h = makeHarness({ always: true });
   const { FakeNotification, state } = h;
@@ -259,6 +388,11 @@ function approval(key, toolName, reason) {
   notification.click();
   assert.equal(state.focusCalls, 1, 'always mode keeps the focus request');
   assert.deepEqual(state.opened, [], 'already-current Session must not be reopened');
+
+  state.pending = new Map([['s1', question('question:s1:call-9', 's1', ['继续吗？'])]]);
+  h.emit();
+  assert.equal(FakeNotification.instances.length, 2, 'always mode must notify a focused question');
+  assert.equal(FakeNotification.instances[1].title, 'DSH 等待你的回答');
 }
 
 console.log('dsh-macos-notify smoke test: ok');
