@@ -22,7 +22,9 @@
     "docs"
   ],
   "scripts": {
-    "test": "node scripts/smoke-test.mjs"
+    "test": "node scripts/smoke-test.mjs",
+    "release:check": "node scripts/release.mjs",
+    "release:tag": "node scripts/release.mjs --tag"
   },
   "dsh": {
     "bundle": {

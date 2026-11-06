@@ -76,6 +76,8 @@ node scripts/smoke-test.mjs
 
 改完 `client.js` 后刷新窗口生效。调试开关、自动化断言与真机验收用例见产品文档。
 
+发版时运行 `npm run release:check` 校验版本一致性，`npm run release:tag` 创建 tag。
+
 ## 更多文档
 
 - [产品文档](docs/产品文档.md)：完整功能规格、通知文案与裁剪规则、权限与系统集成、真机验收用例、自动化测试对照表、技术设计与已知限制。
