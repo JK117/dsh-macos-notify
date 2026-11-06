@@ -1,6 +1,6 @@
 {
   "name": "dsh-macos-notify",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "macOS system notification whenever DSH is waiting for your response — approval, question, or plan review — and whenever a Session finishes a turn, so a background window no longer hides a blocking interaction or a completed task.",
   "type": "module",
