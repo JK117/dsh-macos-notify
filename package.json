@@ -18,7 +18,8 @@
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
-    "README.md"
+    "README.md",
+    "docs"
   ],
   "scripts": {
     "test": "node scripts/smoke-test.mjs"
