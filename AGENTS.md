@@ -25,26 +25,28 @@
   6. `git push origin main --follow-tags`；
   7. 在 GitHub 上创建 / 发布 Release，确认状态为 published、标记为 Latest。
 - 发布后核对 GitHub Releases 页面：目标版本出现在列表中、状态为 published、带 Latest 标记；如果只是 draft，应发布该草稿而不是重新创建。
-- 第 6、7 步获取 GitHub 凭据、push 与创建 Release 按「凭据与审批纪律」合并进同一次完全访问调用。
+- 第 6、7 步的 push 与 Release 操作直接在默认沙箱内完成；需要凭据时按「沙箱、凭据与审批」一节处理。
 
-## 凭据与审批纪律
+## 沙箱、凭据与审批
 
-本机 GitHub 凭据存放在 macOS 钥匙串（`git` 的 `osxkeychain` helper）。DSH 在 workspace-write 沙箱下**网络可用但读不到钥匙串密文**，因此 push 与 GitHub API 都需要一次 `danger-full-access` 审批，那次调用通常还会伴随一次钥匙串授权框。审批是逐次的、不会改变会话模式，所以要尽量减少调用次数。
+DSH 的 `workspace-write` 沙箱（macOS 上是 seatbelt `(allow default) (deny file-write*)` 加工作区与临时目录的写白名单）**只限制写工作区以外的文件**；网络、读取、钥匙串访问都不在它的管辖范围。因此 `git push`、`git ls-remote`、调用 GitHub API 都能直接在默认沙箱里执行，**不需要预先请求 `sandbox_permissions`**。
 
-- **不要探测密钥**：不要为了「试一下凭据」执行 `security find-internet-password -w` / `-g`，也不要把 `git credential fill` 的输出写进文件。每个新进程都会新弹一次钥匙串授权框，用户拒绝后换工具重试只会继续弹；这些读取对发版没有价值，是反复授权的主要来源。
-- **一次读完、一条命令做完**：需要凭据时，在同一次完全访问调用里 `git credential fill` 一次拿到凭据，然后在同一进程内完成 push、创建 Release、核对 Latest。不要让每个步骤各起一个进程各弹一次。
-- **把第一次真实操作当作预检**：不单独做凭据 dry-run；真实 push 失败就停下问用户，不要换路重试。
-- **提前说明次数**：动手前告诉用户本次预计的授权次数（完全访问 × N + 钥匙串 × M）。
-- **凭据失效时停下来**：`brew upgrade git` 等会改变 helper 二进制、使钥匙串 ACL 失效并重新弹框；遇到这种情况交给用户处理，不要改用 ssh、`.netrc` 等其他凭据来源。
-- **避免 token 进命令行参数**：用环境变量传给脚本或 curl 配置，不要写成 `https://token@...` 或 `-u user:token` 这类会出现在进程列表里的形式。
+- 只有两种情况会出现 `danger-full-access` 审批：工具调用显式带了 `sandbox_permissions`；或命令真的被沙箱拒绝（输出 `[sandbox: file access denied under ...]`）后模型选择升级重试。git 操作不写工作区外的文件，不会触发后者。
+- 在默认模式下先验证，不要单独预检凭据：`git ls-remote origin` 覆盖「网络 + 钥匙串认证」，`git push --dry-run origin HEAD:refs/heads/<name>` 覆盖一次完整认证握手；两者都应在零授权下通过。
+- 出现 `fatal: failed to get: 100001`，随后 `could not read Username for 'https://github.com': Device not configured`：这是钥匙串侧的交互问题（登录钥匙串被锁，或新 git helper 首次访问需要授权），不是沙箱、也不是网络问题。处理方式：在「钥匙串访问」里解锁登录钥匙串；或先在终端里手动 push 一次并选择「始终允许」。授权按 host 持久化，github.com 这一条目对所有仓库生效。
+- `brew upgrade git` 会更换 `git-credential-osxkeychain`，钥匙串 ACL 视其为新程序，首次读取可能再要求一次授权——一次性行为，不要为此改用 ssh、`.netrc` 或 token 文件。
+- **不要探测密钥**：不要为了「试一下凭据」反复执行 `security find-internet-password -w` / `-g`，也不要把凭据写进文件或 argv（`https://token@...`、`-u user:token` 会出现在进程列表里）。
 
-一次调用的形状（示意，token 只在进程内流转）：
+需要凭据调 GitHub API 时，在同一进程内取一次，交给 curl 的临时配置文件（0600，用完删除），token 不进 argv：
 
 ```bash
 cred=$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill)
-GH_U=$(sed -n 's/^username=//p' <<<"$cred")
-GH_P=$(sed -n 's/^password=//p' <<<"$cred")
-# 随后在同一进程内：git push（经 askpass/环境变量取用）→ 调 api.github.com 建 Release → 核对 latest
+GH_U=$(printf '%s\n' "$cred" | sed -n 's/^username=//p')
+GH_P=$(printf '%s\n' "$cred" | sed -n 's/^password=//p')
+cfg=$(mktemp)
+printf 'user = "%s:%s"\n' "$GH_U" "$GH_P" >"$cfg"
+curl -sS --config "$cfg" https://api.github.com/repos/JK117/dsh-macos-notify/releases/latest
+rm -f "$cfg"
 ```
 
 ## 测试
