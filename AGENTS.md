@@ -11,9 +11,9 @@
 
 ## 发版
 
-- **只在用户明确要求时发版**。发版请求授权：release commit（仅 `package.json` 的 `version`、`docs/产品文档.md` 的头部与第 11 节版本记录，或用户指定范围）、创建 annotated tag、push，以及在 GitHub 创建 / 发布 Release（published 状态并标记 Latest）。
+- **只在用户明确要求时发版**。发版请求授权：release commit（仅 `package.json` 的 `version`、`docs/产品文档.md` 第 11 节版本记录，或用户指定范围）、创建 annotated tag、push，以及在 GitHub 创建 / 发布 Release（published 状态并标记 Latest）。
 - 发版请求不授权提交尚未提交的功能改动；工作区存在这类改动时先问用户：先提交、只发布已提交内容，还是取消。
-- 顺序：`node --check client.js && npm test && npm run release:check` → release commit → `npm run release:tag` → `git push origin main --follow-tags` → 创建 / 发布 Release。
+- 顺序：`node --check client.js && npm test` → 更新 `package.json` 的 `version` 与第 11 节版本记录 → release commit → `git tag -a v<version> -m v<version>` → `git push origin main --follow-tags` → 创建 / 发布 Release。
 - 发布后核对 GitHub Releases 页面：目标版本在列表中、状态 published、带 Latest；若只是 draft，发布该草稿，不要重建。
 
 ## 沙箱与凭据
@@ -26,7 +26,7 @@
 ## 测试
 
 - 测试命令、断言矩阵与真机验收用例见 `docs/产品文档.md` §8。
-- 改完 `client.js` 后至少运行 `node --check client.js && npm test`；涉及清单或文档版本时再运行 `npm run release:check`。
+- 改完 `client.js` 后至少运行 `node --check client.js && npm test`。
 - 未提交的改动也可以先自测，但不要把测试产生的临时文件留在仓库里。
 
 ## 范围

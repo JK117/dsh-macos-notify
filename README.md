@@ -93,7 +93,7 @@ node scripts/smoke-test.mjs
 
 改完 `client.js` 后刷新窗口生效。调试开关、自动化断言与真机验收用例见产品文档。
 
-发版时运行 `npm run release:check` 校验版本一致性，`npm run release:tag` 创建 tag。
+发版时更新 `package.json` 的 `version` 与产品文档第 11 节版本记录，然后 `git tag -a v<version> -m v<version>` 并 `git push origin main --follow-tags`。
 
 ## 更多文档
 
