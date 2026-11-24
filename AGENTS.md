@@ -25,6 +25,27 @@
   6. `git push origin main --follow-tags`；
   7. 在 GitHub 上创建 / 发布 Release，确认状态为 published、标记为 Latest。
 - 发布后核对 GitHub Releases 页面：目标版本出现在列表中、状态为 published、带 Latest 标记；如果只是 draft，应发布该草稿而不是重新创建。
+- 第 6、7 步获取 GitHub 凭据、push 与创建 Release 按「凭据与审批纪律」合并进同一次完全访问调用。
+
+## 凭据与审批纪律
+
+本机 GitHub 凭据存放在 macOS 钥匙串（`git` 的 `osxkeychain` helper）。DSH 在 workspace-write 沙箱下**网络可用但读不到钥匙串密文**，因此 push 与 GitHub API 都需要一次 `danger-full-access` 审批，那次调用通常还会伴随一次钥匙串授权框。审批是逐次的、不会改变会话模式，所以要尽量减少调用次数。
+
+- **不要探测密钥**：不要为了「试一下凭据」执行 `security find-internet-password -w` / `-g`，也不要把 `git credential fill` 的输出写进文件。每个新进程都会新弹一次钥匙串授权框，用户拒绝后换工具重试只会继续弹；这些读取对发版没有价值，是反复授权的主要来源。
+- **一次读完、一条命令做完**：需要凭据时，在同一次完全访问调用里 `git credential fill` 一次拿到凭据，然后在同一进程内完成 push、创建 Release、核对 Latest。不要让每个步骤各起一个进程各弹一次。
+- **把第一次真实操作当作预检**：不单独做凭据 dry-run；真实 push 失败就停下问用户，不要换路重试。
+- **提前说明次数**：动手前告诉用户本次预计的授权次数（完全访问 × N + 钥匙串 × M）。
+- **凭据失效时停下来**：`brew upgrade git` 等会改变 helper 二进制、使钥匙串 ACL 失效并重新弹框；遇到这种情况交给用户处理，不要改用 ssh、`.netrc` 等其他凭据来源。
+- **避免 token 进命令行参数**：用环境变量传给脚本或 curl 配置，不要写成 `https://token@...` 或 `-u user:token` 这类会出现在进程列表里的形式。
+
+一次调用的形状（示意，token 只在进程内流转）：
+
+```bash
+cred=$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill)
+GH_U=$(sed -n 's/^username=//p' <<<"$cred")
+GH_P=$(sed -n 's/^password=//p' <<<"$cred")
+# 随后在同一进程内：git push（经 askpass/环境变量取用）→ 调 api.github.com 建 Release → 核对 latest
+```
 
 ## 测试
 
