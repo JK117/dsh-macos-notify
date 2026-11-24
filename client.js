@@ -79,8 +79,13 @@ window.__ModuleLoader__.load({
       unknownQuestion: 'DSH has a question for you',
     };
 
-    /** Services this plugin cannot work without. */
-    const inject = ['uiSession', 'sessions', 'locale'];
+    /**
+     * Services this plugin cannot work without. Since the DSH release after
+     * 0.2.2-rc.2 the Session status table is its own `uiSession.sessionStatus`
+     * service; reading the property without this injection throws
+     * `cannot get property "uiSession.sessionStatus" without inject`.
+     */
+    const inject = ['uiSession', 'uiSession.sessionStatus', 'sessions', 'locale'];
 
     /** Keep notification copy to the two short lines macOS renders well. */
     const BODY_LIMIT = 180;

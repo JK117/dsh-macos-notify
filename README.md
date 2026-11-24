@@ -43,6 +43,8 @@ DSH 会话已完成
 
 ## 安装
 
+要求 DSH `0.2.3-alpha.2` 或更高版本（本插件按该版本验证）：从 `0.2.2-rc.2` 之后的版本起，会话状态表是独立的 `uiSession.sessionStatus` 服务，插件必须注入它；更旧的 DSH 会被 `engines.dsh` 拒绝加载。
+
 1. 侧边栏「插件」页 → **Add plugin** → **Install a third-party plugin**，填入本目录的绝对路径。
 2. 安装完成后**刷新窗口**——桌面端从 profile 软链读取 `client.js`，不刷新会继续用旧版。
 3. 如果 macOS 询问是否允许「DeepSeek Harness」发送通知，选择允许；也可以在系统设置里随时检查。
@@ -78,6 +80,7 @@ DSH 会话已完成
 | 点击后没回到会话 | 会话可能已归档或删除 |
 | 点击后没有作答面板 | 缺少 `ui-user-questions` 提供的能力 |
 | 页面关闭后收不到通知 | 通知由页面发出，页面关闭时既没有通知也没有可作答的界面 |
+| 插件页提示 `cannot get property "uiSession.sessionStatus" without inject` | 插件与 DSH 版本不匹配：升级到 DSH `0.2.3-alpha.2` 或更高版本，然后刷新窗口 |
 
 ## 开发与测试
 

@@ -164,7 +164,14 @@ function makeHarness({ always }) {
 
   vm.runInNewContext(source, sandbox, { filename: 'client.js' });
   assert.equal(typeof moduleExports.apply, 'function');
-  assert.deepEqual([...moduleExports.inject], ['uiSession', 'sessions', 'locale']);
+  // The Session status table is a separate Cordis service since the DSH
+  // release after 0.2.2-rc.2; reading ctx.uiSession.sessionStatus without
+  // this injection throws in a real context, so the declaration is part of
+  // the contract this harness keeps honest.
+  assert.deepEqual(
+    [...moduleExports.inject],
+    ['uiSession', 'uiSession.sessionStatus', 'sessions', 'locale'],
+  );
   moduleExports.apply(ctx);
   assert.equal(listeners.size, 1);
 

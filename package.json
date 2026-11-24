@@ -2,6 +2,9 @@
   "name": "dsh-macos-notify",
   "version": "0.3.0",
   "private": true,
+  "engines": {
+    "dsh": "^0.2.3-alpha.2"
+  },
   "description": "macOS system notification whenever DSH is waiting for your response — approval, question, or plan review — and whenever a Session finishes a turn, so a background window no longer hides a blocking interaction or a completed task.",
   "type": "module",
   "main": "index.js",
@@ -34,7 +37,8 @@
       "platform": "web",
       "immediately": true,
       "inject": [
-        "@deepseek-ai/dsh-client-ui-session"
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-ui-session-status"
       ]
     }
   }
