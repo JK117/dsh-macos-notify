@@ -22,7 +22,6 @@ const version = pkg.version;
 const tag = `v${version}`;
 const wantTag = process.argv.includes('--tag');
 const errors = [];
-const notes = [];
 
 /** npm-compatible semver: no leading zeroes, optional prerelease/build. */
 const SEMVER = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
@@ -54,11 +53,6 @@ try {
   /* tag does not exist yet */
 }
 
-const headSha = git('rev-parse', 'HEAD');
-if (tagSha !== null && tagSha !== headSha) {
-  notes.push(`tag ${tag} 已存在，指向 ${tagSha.slice(0, 7)}（不是当前 HEAD）`);
-}
-
 if (wantTag) {
   if (tagSha !== null) errors.push(`tag ${tag} 已存在，不能重复创建`);
   if (git('status', '--porcelain') !== '') errors.push('工作区不干净，先提交再打 tag');
@@ -76,7 +70,6 @@ if (errors.length > 0) {
   process.exit(1);
 }
 
-for (const note of notes) console.log(`  note: ${note}`);
 console.log('✔ 版本一致');
 
 if (wantTag) {
