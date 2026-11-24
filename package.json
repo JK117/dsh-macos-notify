@@ -1,6 +1,6 @@
 {
   "name": "dsh-macos-notify",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "engines": {
     "dsh": "^0.2.3-alpha.2"
